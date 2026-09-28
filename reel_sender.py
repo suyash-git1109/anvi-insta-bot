@@ -18,17 +18,27 @@ from instagrapi.exceptions import (
 FATAL = (LoginRequired, ChallengeRequired, PleaseWaitFewMinutes, RateLimitError)
 IST = timezone(timedelta(hours=5, minutes=30))
 
-REELS_PER_WINDOW = int(os.environ.get("REELS_PER_WINDOW", "3"))
-MIN_GAP_MIN = 25
-# दिवसाच्या वेळेच्या खिडक्या (IST तास): प्रत्येकीत REELS_PER_WINDOW रील्स
-WINDOWS = [(7, 12), (12, 18), (18, 22)]
+MIN_PER_DAY = int(os.environ.get("REELS_MIN_PER_DAY", "5"))
+MAX_PER_DAY = min(int(os.environ.get("REELS_MAX_PER_DAY", "15")), 15)   # कधीच १५ पेक्षा जास्त नाही
+MIN_GAP_MIN = 20
+DAY_START, DAY_END = 0, 24      # IST: २४ तास, वेळेचं बंधन नाही
 
-# शोधासाठी hashtags (Render → Environment मध्ये REEL_HASHTAGS ने बदलता येतात, कॉमाने वेगळे)
-DEFAULT_TAGS = ("marathicomedy,marathimemes,marathireels,funnyreels,"
-                "couplereels,romanticreels,couplegoals,lovereels")
-HASHTAGS = [t.strip().lstrip("#") for t in os.environ.get("REEL_HASHTAGS", DEFAULT_TAGS).split(",") if t.strip()]
-TAGS_PER_DAY = int(os.environ.get("REEL_TAGS_PER_DAY", "3"))     # रोज किती hashtags मधून शोधायचं
-PER_TAG = int(os.environ.get("REEL_PER_TAG", "15"))              # प्रत्येक hashtag मधून किती रील्स
+# शोधासाठी hashtags: फक्त मराठी आणि हिंदी, प्रकारानुसार (रोमँटिक / इमोशनल / फनी)
+TAGS = {
+    "romantic": ["marathicouple", "marathilove", "marathiromantic", "hindiromantic",
+                 "couplegoals", "lovestatus", "romanticreels", "hindilove"],
+    "emotional": ["marathishayari", "hindishayari", "emotionalreels", "marathistatus",
+                  "marathiemotional", "hindiemotional", "dilkibaat", "hindistatus"],
+    "funny": ["marathicomedy", "marathimemes", "marathireels", "hindicomedy",
+              "hindimemes", "hindifunnyreels", "marathifunny", "funnyreelshindi"],
+}
+TAGS_PER_CATEGORY = int(os.environ.get("REEL_TAGS_PER_CATEGORY", "2"))   # प्रत्येक प्रकारातून रोज किती hashtags
+PER_TAG = int(os.environ.get("REEL_PER_TAG", "20"))                       # प्रत्येक hashtag मधून किती रील्स
+
+# भाषा फिल्टर: caption मध्ये देवनागरी (मराठी/हिंदी) किंवा हे शब्द/hashtags हवेतच
+LANG_WORDS = ("marathi", "marath", "hindi", "hind", "maharashtra", "pune", "mumbai", "mazha", "majha",
+              "tujha", "tula", "mala", "prem", "pyar", "pyaar", "ishq", "dil", "shayari", "yaar", "bhai",
+              "mera", "tera", "tu ", "kya", "kahi", "aahe", "ahe")
 
 REELS_FILE = os.environ.get(
     "REELS_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "reels.txt"))
@@ -72,43 +82,56 @@ def _is_reel(m):
     return getattr(m, "media_type", None) == 2 and getattr(m, "product_type", "") == "clips"
 
 
+def _lang_ok(m):
+    """caption मध्ये देवनागरी किंवा मराठी/हिंदी खुणा असतील तरच घेतो."""
+    cap = (getattr(m, "caption_text", "") or "").lower()
+    if any("\u0900" <= ch <= "\u097f" for ch in cap):
+        return True
+    return any(w in cap for w in LANG_WORDS)
+
+
 def _refresh_pool(cl, state, log):
-    """hashtags मधून रील्स गोळा करतो आणि state["pool"] मध्ये ठेवतो."""
+    """रोमँटिक/इमोशनल/फनी hashtags मधून मराठी-हिंदी रील्स गोळा करतो."""
     used = set(state.get("used", []))
     found = []
-    tags = random.sample(HASHTAGS, min(TAGS_PER_DAY, len(HASHTAGS)))
-    for tag in tags:
-        medias = []
-        for fn in ("hashtag_medias_top", "hashtag_medias_recent"):
-            try:
-                medias = list(getattr(cl, fn)(tag, amount=PER_TAG))
-                if medias:
-                    break
-            except FATAL:
-                raise
-            except Exception as e:
-                log("[REEL] %s(%s) failed: %s" % (fn, tag, str(e)[:100]))
-        reels = [str(m.pk) for m in medias if _is_reel(m) and str(m.pk) not in used]
-        log("[REEL] #%s -> %d reels" % (tag, len(reels)))
-        found += reels
-        time.sleep(random.uniform(2, 5))
-    state["pool"] = list(dict.fromkeys(found))    # डुप्लिकेट काढून
+    for cat, names in TAGS.items():
+        for tag in random.sample(names, min(TAGS_PER_CATEGORY, len(names))):
+            medias = []
+            for fn in ("hashtag_medias_top", "hashtag_medias_recent"):
+                try:
+                    medias = list(getattr(cl, fn)(tag, amount=PER_TAG))
+                    if medias:
+                        break
+                except FATAL:
+                    raise
+                except Exception as e:
+                    log("[REEL] %s(%s) failed: %s" % (fn, tag, str(e)[:100]))
+            reels = [str(m.pk) for m in medias
+                     if _is_reel(m) and _lang_ok(m) and str(m.pk) not in used]
+            log("[REEL] %s #%s -> %d reels" % (cat, tag, len(reels)))
+            found += reels
+            time.sleep(random.uniform(2, 5))
+    random.shuffle(found)
+    state["pool"] = list(dict.fromkeys(found))
 
 
 def _plan_day(now):
+    """आज किती रील्स (MIN ते MAX रँडम) आणि कोणत्या वेळी ते ठरवतो (फक्त अजून न गेलेल्या वेळा)."""
+    total = random.randint(min(MIN_PER_DAY, MAX_PER_DAY), MAX_PER_DAY)
     cur = now.hour * 60 + now.minute
-    times = []
-    for start, end in WINDOWS:
-        lo, hi = start * 60, end * 60 - 1
-        picked = []
-        for _ in range(200):
-            if len(picked) >= REELS_PER_WINDOW:
-                break
-            m = random.randint(lo, hi)
-            if all(abs(m - x) >= MIN_GAP_MIN for x in picked):
-                picked.append(m)
-        times += [m for m in picked if m > cur]
-    return sorted(times)
+    lo, hi = max(DAY_START * 60, cur + 1), DAY_END * 60 - 1
+    if hi <= lo:
+        return []
+    # दिवस जितका उरलाय तितक्या प्रमाणात संख्या कमी करतो
+    total = max(1, round(total * (hi - lo) / ((DAY_END - DAY_START) * 60)))
+    picked = []
+    for _ in range(1000):
+        if len(picked) >= total:
+            break
+        m = random.randint(lo, hi)
+        if all(abs(m - x) >= MIN_GAP_MIN for x in picked):
+            picked.append(m)
+    return sorted(picked)
 
 
 def _pick(state):
@@ -150,7 +173,7 @@ def maybe_send(cl, target_pk, data_dir, log):
         state["pool_tried"] = ""
         _save_state(path, state)
         if state["pending"]:
-            log("[REEL] aaj %d reels pathvaychya, vel (IST): %s" % (
+            log("[REEL] aaj %d reels pathvaychya (max 15), vel (IST): %s" % (
                 len(state["pending"]),
                 ", ".join("%02d:%02d" % divmod(m, 60) for m in state["pending"])))
 

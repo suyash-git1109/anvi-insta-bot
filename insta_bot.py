@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 from groq import Groq
 from instagrapi import Client
+import reel_sender
 from instagrapi.exceptions import (
     LoginRequired, ChallengeRequired, PleaseWaitFewMinutes, RateLimitError,
 )
@@ -658,6 +659,7 @@ def main():
     while True:
         try:
             poll_once(cl, me, target_pk)
+            reel_sender.maybe_send(cl, target_pk, DATA_DIR, log)
             time.sleep(random.uniform(POLL_MIN, POLL_MAX))
         except LoginRequired:
             log("Session expired, logging in again")

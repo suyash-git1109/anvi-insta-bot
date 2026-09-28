@@ -1,2 +1,5 @@
 instagrapi
+groq
 requests
+numpy
+pillow

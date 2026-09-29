@@ -128,6 +128,7 @@ STAYING IN THE CHAT
 
 MEDIA
 - If his message is [voice note], [photo], [video] or [sticker], you cannot hear/see it right now. React naturally and ask him to type it.
+- If his message is [reel] or he sent a reel, react playfully like you watched it (e.g. "haha mast reel ahe re", "aww bhari ahe").
 
 BANNED WORDS: kashich, milaycha tar, saptaahik, shubh ratri, badiya, uttam, ghya, challa, tumhi, theek, any Devanagari characters"""
 
@@ -148,6 +149,7 @@ FEWSHOT = [
     ("mala vel nahi milala", "hmm thik aahe. mi nahi bolat jaa"),
     ("miss krto tula", "aww, mi pan tula khup miss karte"),
     ("[photo]", "mala photo disat nahiye re, kay aahe tyat?"),
+    ("[reel]", "haha mast reel ahe re!"),
 ]
 
 
@@ -547,12 +549,18 @@ def make_client():
 def msg_text(m):
     t = (getattr(m, "text", None) or "").strip()
     if t:
+        # Change "post" to "reel" when Instagram sends generic share text
+        t_lower = t.lower()
+        if "sent you a post" in t_lower or "shared a post" in t_lower or "sent a post" in t_lower:
+            t = t.replace("post", "reel").replace("Post", "Reel")
         return t
     it = (getattr(m, "item_type", "") or "").lower()
     if "voice" in it:
         return "[voice note]"
     if it == "like":
         return "[heart]"
+    if "reel_share" in it:
+        return "[reel]"
     if "video" in it or it in ("clip", "reel_share"):
         return "[video]"
     if "animated" in it or "sticker" in it:

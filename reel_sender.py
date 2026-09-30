@@ -1,214 +1,206 @@
-"""
-reel_sender.py - रोमँटिक/फनी रील्स आपोआप शोधून दिवसभर ठराविक वेळांना पाठवतो.
 
-- रील्स Instagram च्या hashtags मधून आपोआप निवडतो (लिस्ट द्यायची गरज नाही).
-- reels.txt असेल (ऐच्छिक) तर त्यातल्या लिंक्स पण मिक्स होतात.
-- insta_bot.py यातलं maybe_send(...) प्रत्येक poll ला बोलावतो.
-"""
-import os
-import json
-import random
+    import os
 import time
-from datetime import datetime, timedelta, timezone
+import random
+import base64
+import pickle
+import threading
+from groq import Groq
+from instagrapi import Client
+from instagrapi.exceptions import LoginRequired, ChallengeRequired
 
-from instagrapi.exceptions import (
-    LoginRequired, ChallengeRequired, PleaseWaitFewMinutes, RateLimitError,
-)
+GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
+IG_USERNAME     = os.environ.get("IG_USERNAME", "")
+IG_PASSWORD     = os.environ.get("IG_PASSWORD", "")
+IG_SESSION_B64  = os.environ.get("IG_SESSION_B64", "")
+TARGET_USERNAME = os.environ.get("TARGET_USERNAME", "")
+POLL_MIN        = int(os.environ.get("POLL_MIN_SECONDS", "300"))
+POLL_MAX        = int(os.environ.get("POLL_MAX_SECONDS", "420"))
 
-FATAL = (LoginRequired, ChallengeRequired, PleaseWaitFewMinutes, RateLimitError)
-IST = timezone(timedelta(hours=5, minutes=30))
+groq_client = Groq(api_key=GROQ_API_KEY)
+conversation_history = []
 
-MIN_PER_DAY = int(os.environ.get("REELS_MIN_PER_DAY", "5"))
-MAX_PER_DAY = min(int(os.environ.get("REELS_MAX_PER_DAY", "15")), 15)   # कधीच १५ पेक्षा जास्त नाही
-MIN_GAP_MIN = 20
-DAY_START, DAY_END = 0, 24      # IST: २४ तास, वेळेचं बंधन नाही
+def get_ai_reply(user_message):
+    system_prompt = f"""Tu Anvi aahes - {TARGET_USERNAME} chi Instagram var khup close girlfriend.
+Tu always Roman Marathi madhe bold. Devanagari nakos, pure English nakos.
+Example: "hii re, kasa aahe tu?", "aaj mala khup kantala aala re"
+Tu natural, warm, loving ani playful aahes. Short messages (1-2 sentences). Emojis vapar."""
+    conversation_history.append({"role": "user", "content": user_message})
+    if len(conversation_history) > 20:
+        conversation_history.pop(0)
+    response = groq_client.chat.completions.create(
+        model="llama3-8b-8192",
+        messages=[{"role": "system", "content": system_prompt}] + conversation_history,
+        max_tokens=150,
+        temperature=0.85
+    )
+    reply = response.choices[0].message.content.strip()
+    conversation_history.append({"role": "assistant", "content": reply})
+    return reply
 
-# शोधासाठी hashtags: फक्त मराठी आणि हिंदी, प्रकारानुसार (रोमँटिक / इमोशनल / फनी)
-TAGS = {
-    "romantic": ["marathicouple", "marathilove", "marathiromantic", "hindiromantic",
-                 "couplegoals", "lovestatus", "romanticreels", "hindilove"],
-    "emotional": ["marathishayari", "hindishayari", "emotionalreels", "marathistatus",
-                  "marathiemotional", "hindiemotional", "dilkibaat", "hindistatus"],
-    "funny": ["marathicomedy", "marathimemes", "marathireels", "hindicomedy",
-              "hindimemes", "hindifunnyreels", "marathifunny", "funnyreelshindi"],
-}
-TAGS_PER_CATEGORY = int(os.environ.get("REEL_TAGS_PER_CATEGORY", "2"))   # प्रत्येक प्रकारातून रोज किती hashtags
-PER_TAG = int(os.environ.get("REEL_PER_TAG", "20"))                       # प्रत्येक hashtag मधून किती रील्स
-
-# भाषा फिल्टर: caption मध्ये देवनागरी (मराठी/हिंदी) किंवा हे शब्द/hashtags हवेतच
-LANG_WORDS = ("marathi", "marath", "hindi", "hind", "maharashtra", "pune", "mumbai", "mazha", "majha",
-              "tujha", "tula", "mala", "prem", "pyar", "pyaar", "ishq", "dil", "shayari", "yaar", "bhai",
-              "mera", "tera", "tu ", "kya", "kahi", "aahe", "ahe")
-
-REELS_FILE = os.environ.get(
-    "REELS_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "reels.txt"))
-
-CAPTIONS = [
-    "haha he bagh vedya",
-    "he baghun tuchi athvan aali",
-    "bagh na, mast aahe ha",
-    "he tula pathvaycha hota re",
-    "haha he aapla aahe",
-    "aww bagh na he",
-]
-
-
-def _load_state(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _save_state(path, state):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-    except Exception:
-        pass
-
-
-def _file_reels():
-    try:
-        with open(REELS_FILE, "r", encoding="utf-8") as f:
-            return [l.strip() for l in f
-                    if l.strip() and not l.strip().startswith("#") and "XXXX" not in l and "YYYY" not in l]
-    except Exception:
-        return []
-
-
-def _is_reel(m):
-    return getattr(m, "media_type", None) == 2 and getattr(m, "product_type", "") == "clips"
-
-
-def _lang_ok(m):
-    """caption मध्ये देवनागरी किंवा मराठी/हिंदी खुणा असतील तरच घेतो."""
-    cap = (getattr(m, "caption_text", "") or "").lower()
-    if any("\u0900" <= ch <= "\u097f" for ch in cap):
-        return True
-    return any(w in cap for w in LANG_WORDS)
-
-
-def _refresh_pool(cl, state, log):
-    """रोमँटिक/इमोशनल/फनी hashtags मधून मराठी-हिंदी रील्स गोळा करतो."""
-    used = set(state.get("used", []))
-    found = []
-    for cat, names in TAGS.items():
-        for tag in random.sample(names, min(TAGS_PER_CATEGORY, len(names))):
-            medias = []
-            for fn in ("hashtag_medias_top", "hashtag_medias_recent"):
-                try:
-                    medias = list(getattr(cl, fn)(tag, amount=PER_TAG))
-                    if medias:
-                        break
-                except FATAL:
-                    raise
-                except Exception as e:
-                    log("[REEL] %s(%s) failed: %s" % (fn, tag, str(e)[:100]))
-            reels = [str(m.pk) for m in medias
-                     if _is_reel(m) and _lang_ok(m) and str(m.pk) not in used]
-            log("[REEL] %s #%s -> %d reels" % (cat, tag, len(reels)))
-            found += reels
-            time.sleep(random.uniform(2, 5))
-    random.shuffle(found)
-    state["pool"] = list(dict.fromkeys(found))
-
-
-def _plan_day(now):
-    """आज किती रील्स (MIN ते MAX रँडम) आणि कोणत्या वेळी ते ठरवतो (फक्त अजून न गेलेल्या वेळा)."""
-    total = random.randint(min(MIN_PER_DAY, MAX_PER_DAY), MAX_PER_DAY)
-    cur = now.hour * 60 + now.minute
-    lo, hi = max(DAY_START * 60, cur + 1), DAY_END * 60 - 1
-    if hi <= lo:
-        return []
-    # दिवस जितका उरलाय तितक्या प्रमाणात संख्या कमी करतो
-    total = max(1, round(total * (hi - lo) / ((DAY_END - DAY_START) * 60)))
-    picked = []
-    for _ in range(1000):
-        if len(picked) >= total:
-            break
-        m = random.randint(lo, hi)
-        if all(abs(m - x) >= MIN_GAP_MIN for x in picked):
-            picked.append(m)
-    return sorted(picked)
-
-
-def _pick(state):
-    """pool मधून (किंवा reels.txt मधून) एक रील निवडतो."""
-    pool = state.get("pool", [])
-    if pool:
-        item = pool.pop(random.randrange(len(pool)))
-        state["pool"] = pool
-        return item
-    used = set(state.get("used", []))
-    fresh = [u for u in _file_reels() if u not in used]
-    if not fresh:
-        fresh = _file_reels()
-    return random.choice(fresh) if fresh else None
-
-
-def _send(cl, target_pk, item):
-    uid = int(target_pk)
-    if str(item).isdigit():                       # media pk
-        cl.direct_media_share(str(item), [uid])
-        return
-    try:                                          # reels.txt मधली लिंक
-        cl.direct_media_share(str(cl.media_pk_from_url(item)), [uid])
-    except FATAL:
-        raise
-    except Exception:
-        cl.direct_send(item, user_ids=[uid])
-
-
-def maybe_send(cl, target_pk, data_dir, log):
-    path = os.path.join(data_dir, "reel_state.json")
-    state = _load_state(path)
-    now = datetime.now(IST)
-    today = now.strftime("%Y-%m-%d")
-
-    if state.get("date") != today:
-        state["date"] = today
-        state["pending"] = _plan_day(now)
-        state["pool_tried"] = ""
-        _save_state(path, state)
-        if state["pending"]:
-            log("[REEL] aaj %d reels pathvaychya (max 15), vel (IST): %s" % (
-                len(state["pending"]),
-                ", ".join("%02d:%02d" % divmod(m, 60) for m in state["pending"])))
-
-    pending = state.get("pending", [])
-    cur = now.hour * 60 + now.minute
-    if not pending or cur < pending[0]:
-        return
-
-    # पाठवायची वेळ झाली. pool रिकामा असेल तर आजसाठी एकदा शोध
-    if not state.get("pool") and state.get("pool_tried") != today:
-        state["pool_tried"] = today
+def login_instagram():
+    cl = Client()
+    cl.delay_range = [2, 5]
+    if IG_SESSION_B64:
         try:
-            _refresh_pool(cl, state, log)
-        except FATAL:
-            _save_state(path, state)
-            raise
-        _save_state(path, state)
-
-    pending.pop(0)                    # आधी काढ, म्हणजे एरर आली तरी लूप होणार नाही
-    state["pending"] = pending
-    item = _pick(state)
-    if not item:
-        log("[REEL] pathvayla reel milali nahi")
-        _save_state(path, state)
-        return
-    state["used"] = (state.get("used", []) + [str(item)])[-300:]
-    _save_state(path, state)
-
+            session_bytes = base64.b64decode(IG_SESSION_B64)
+            session_data = pickle.loads(session_bytes)
+            cl.set_settings(session_data)
+            cl.login(IG_USERNAME, IG_PASSWORD)
+            print(f"[{time.strftime('%H:%M:%S')}] Session restored!")
+            return cl
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] Session invalid: {e}. Fresh login...")
     try:
-        _send(cl, target_pk, item)
-        log("[REEL] sent", item)
-        if random.random() < 0.6:
-            time.sleep(random.uniform(3, 8))
-            cl.direct_send(random.choice(CAPTIONS), user_ids=[int(target_pk)])
-    except FATAL:
+        cl.login(IG_USERNAME, IG_PASSWORD)
+        print(f"[{time.strftime('%H:%M:%S')}] Logged in with password!")
+        return cl
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] Login FAILED: {e}")
+        raise
+
+def send_reply(cl, thread_id, text):
+    try:
+        cl.direct_send(text, thread_ids=[thread_id])
+        print(f"[{time.strftime('%H:%M:%S')}] [SENT] {text}")
+    except (LoginRequired, ChallengeRequired):
         raise
     except Exception as e:
-        log("[REEL] failed:", str(e)[:150])
+        print(f"[{time.strftime('%H:%M:%S')}] Send error: {e}")
+
+def reel_sender(cl, target_user_id):
+    sent_today = []
+    max_reels_per_day = random.randint(5, 20)
+    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathvnar!")
+
+    while True:
+        now = time.localtime()
+        hour = now.tm_hour
+
+        # Midnight la reset
+        if hour == 0:
+            sent_today = []
+            max_reels_per_day = random.randint(5, 20)
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Navin din! Aaj {max_reels_per_day} reels pathvnar!")
+
+        if len(sent_today) < max_reels_per_day:
+            try:
+                medias = cl.user_feed(cl.user_id, amount=50)
+                reels = [m for m in medias if m.media_type == 2 and m.product_type == "clips"]
+
+                if reels:
+                    reel = random.choice(reels)
+                    if reel.pk not in sent_today:
+                        messages = [
+                            "haha he bagh 😂😂",
+                            "re tu bagh ekda 🥺❤️",
+                            "hya sarkha ahe apan 😍",
+                            "lol yacha mala hasaycha hota 😂",
+                            "ekdum mi sarakha ahe na? 🥹",
+                            "aww he bagh re 🫶",
+                            "hahaha too much 😂💀",
+                            "re mi tujhyasathi pathavli 🥰",
+                            "he bagh kiti cute ahe 🥰",
+                            "hya sarkha tu aahes exactly 😂❤️",
+                            "babu he bagh 😭🔥",
+                            "lol me hasate hasate padle 😂",
+                        ]
+                        msg = random.choice(messages)
+                        send_reply(cl, target_user_id, msg)
+                        time.sleep(3)
+                        cl.direct_send_media(reel.pk, thread_ids=[target_user_id])
+                        sent_today.append(reel.pk)
+                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reel pathavli! ({len(sent_today)}/{max_reels_per_day})")
+                        # Natural gap 15 te 45 min
+                        gap = random.randint(900, 2700)
+                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pudchi reel {gap//60} min nantar...")
+                        time.sleep(gap)
+                    else:
+                        time.sleep(300)
+                else:
+                    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reels sapadlya nahi, 30 min nantar try...")
+                    time.sleep(1800)
+            except (LoginRequired, ChallengeRequired):
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Session expired in reel sender!")
+                time.sleep(60)
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] Reel error: {e}")
+                time.sleep(600)
+        else:
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathavlya! Kal parat!")
+            time.sleep(3600)
+
+def main():
+    print(f"[{time.strftime('%H:%M:%S')}] Starting Instagram text bot for Anvi")
+    cl = login_instagram()
+
+    try:
+        target_user = cl.user_info_by_username(TARGET_USERNAME)
+        target_user_id = str(target_user.pk)
+        print(f"[{time.strftime('%H:%M:%S')}] Listening for DMs from {TARGET_USERNAME}")
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] Target user error: {e}")
+        return
+
+    reel_thread = threading.Thread(target=reel_sender, args=(cl, target_user_id), daemon=True)
+    reel_thread.start()
+
+    replied_messages = set()
+    consecutive_errors = 0
+
+    while True:
+        try:
+            wait = random.randint(POLL_MIN, POLL_MAX)
+            print(f"[{time.strftime('%H:%M:%S')}] Waiting {wait}s...")
+            time.sleep(wait)
+
+            threads = cl.direct_threads(amount=10)
+            for thread in threads:
+                if not thread.messages:
+                    continue
+                last_msg = thread.messages[0]
+                if last_msg.id in replied_messages:
+                    continue
+                if str(last_msg.user_id) == str(cl.user_id):
+                    replied_messages.add(last_msg.id)
+                    continue
+                thread_user_ids = [str(u.pk) for u in thread.users]
+                if target_user_id not in thread_user_ids:
+                    continue
+                msg_text = ""
+                if last_msg.item_type == "text":
+                    msg_text = last_msg.text
+                elif last_msg.item_type == "reel_share":
+                    msg_text = "ek reel pathavli"
+                elif last_msg.item_type == "media_share":
+                    msg_text = "ek post pathavla"
+                else:
+                    replied_messages.add(last_msg.id)
+                    continue
+                print(f"[{time.strftime('%H:%M:%S')}] [MSG] {msg_text}")
+                reply = get_ai_reply(msg_text)
+                print(f"[{time.strftime('%H:%M:%S')}] [REPLY] {reply}")
+                send_reply(cl, thread.id, reply)
+                replied_messages.add(last_msg.id)
+                consecutive_errors = 0
+
+        except (LoginRequired, ChallengeRequired):
+            print(f"[{time.strftime('%H:%M:%S')}] Session expired! Auto re-login...")
+            try:
+                cl = login_instagram()
+                print(f"[{time.strftime('%H:%M:%S')}] Re-login successful!")
+                consecutive_errors = 0
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] Re-login failed: {e}")
+                time.sleep(60)
+        except Exception as e:
+            consecutive_errors += 1
+            print(f"[{time.strftime('%H:%M:%S')}] Error ({consecutive_errors}): {e}")
+            if consecutive_errors >= 5:
+                time.sleep(300)
+                consecutive_errors = 0
+            else:
+                time.sleep(30)
+
+if __name__ == "__main__":
+    main()

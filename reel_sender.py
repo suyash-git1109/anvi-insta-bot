@@ -1,5 +1,4 @@
-
-    import os
+import os
 import time
 import random
 import base64
@@ -29,7 +28,7 @@ Tu natural, warm, loving ani playful aahes. Short messages (1-2 sentences). Emoj
     if len(conversation_history) > 20:
         conversation_history.pop(0)
     response = groq_client.chat.completions.create(
-        model="llama3-8b-8192",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "system", "content": system_prompt}] + conversation_history,
         max_tokens=150,
         temperature=0.85
@@ -69,66 +68,73 @@ def send_reply(cl, thread_id, text):
         print(f"[{time.strftime('%H:%M:%S')}] Send error: {e}")
 
 def reel_sender(cl, target_user_id):
-    sent_today = []
-    max_reels_per_day = random.randint(5, 20)
-    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathvnar!")
+    MESSAGES = [
+        "he bagh na, aapan donghe ase ch aahot 😂❤️",
+        "re babu hi reel pahun mala tujhi aathvan aali 🥺",
+        "tu ani mi, exactly asech bhandto 😭😂",
+        "hya couple sarkhi aapli jodi aahe na? 🥰",
+        "he pahilas ka? mi tujhyavar ragavle tar asach hoil 😤😂",
+        "aww kiti god aahe he, mala pan asach pahije 🥹❤️",
+        "tu mala kadhi asa surprise dilas ka? 😏",
+        "ha mulga tujhya sarkha vedha aahe 😂😂",
+        "hi mulgi mazya sarkhi nautanki aahe ka? 🙈",
+        "he bagh ani mala sang, tu asa karshil ka? 😌",
+        "me tula miss kartey, he bagh ani hass 🫶",
+        "asach ek date pahije mala tujhyasobat 🥺❤️",
+        "tu itka romantic kadhi honar re? 😜",
+        "hya reel madhe tuch disla mala 😂😍",
+    ]
+    HASHTAGS = ["couplegoals", "coupleslove", "cutecouple", "relationshipgoals", "marathicouple"]
+
+    sent_ids = set()
+    current_day = time.strftime("%Y-%m-%d")
+    sent_today = 0
+    daily_limit = random.randint(5, 20)
+    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {daily_limit} reels pathvnar!")
 
     while True:
-        now = time.localtime()
-        hour = now.tm_hour
+        try:
+            today = time.strftime("%Y-%m-%d")
+            if today != current_day:
+                current_day = today
+                sent_today = 0
+                daily_limit = random.randint(5, 20)
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Navin din! Aaj {daily_limit} reels pathvnar!")
 
-        # Midnight la reset
-        if hour == 0:
-            sent_today = []
-            max_reels_per_day = random.randint(5, 20)
-            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Navin din! Aaj {max_reels_per_day} reels pathvnar!")
+            if sent_today >= daily_limit:
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj che {daily_limit} reels zale, kal parat!")
+                time.sleep(1800)
+                continue
 
-        if len(sent_today) < max_reels_per_day:
-            try:
-                medias = cl.user_feed(cl.user_id, amount=50)
-                reels = [m for m in medias if m.media_type == 2 and m.product_type == "clips"]
+            tag = random.choice(HASHTAGS)
+            medias = cl.hashtag_medias_top(tag, amount=30)
+            reels = [m for m in medias
+                     if m.media_type == 2 and m.product_type == "clips"
+                     and str(m.pk) not in sent_ids]
 
-                if reels:
-                    reel = random.choice(reels)
-                    if reel.pk not in sent_today:
-                        messages = [
-                            "haha he bagh 😂😂",
-                            "re tu bagh ekda 🥺❤️",
-                            "hya sarkha ahe apan 😍",
-                            "lol yacha mala hasaycha hota 😂",
-                            "ekdum mi sarakha ahe na? 🥹",
-                            "aww he bagh re 🫶",
-                            "hahaha too much 😂💀",
-                            "re mi tujhyasathi pathavli 🥰",
-                            "he bagh kiti cute ahe 🥰",
-                            "hya sarkha tu aahes exactly 😂❤️",
-                            "babu he bagh 😭🔥",
-                            "lol me hasate hasate padle 😂",
-                        ]
-                        msg = random.choice(messages)
-                        send_reply(cl, target_user_id, msg)
-                        time.sleep(3)
-                        cl.direct_send_media(reel.pk, thread_ids=[target_user_id])
-                        sent_today.append(reel.pk)
-                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reel pathavli! ({len(sent_today)}/{max_reels_per_day})")
-                        # Natural gap 15 te 45 min
-                        gap = random.randint(900, 2700)
-                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pudchi reel {gap//60} min nantar...")
-                        time.sleep(gap)
-                    else:
-                        time.sleep(300)
-                else:
-                    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reels sapadlya nahi, 30 min nantar try...")
-                    time.sleep(1800)
-            except (LoginRequired, ChallengeRequired):
-                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Session expired in reel sender!")
-                time.sleep(60)
-            except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] Reel error: {e}")
-                time.sleep(600)
-        else:
-            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathavlya! Kal parat!")
-            time.sleep(3600)
+            if not reels:
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reels sapadlya nahit, 30 min nantar try...")
+                time.sleep(1800)
+                continue
+
+            reel = random.choice(reels)
+            cl.direct_send(random.choice(MESSAGES), user_ids=[int(target_user_id)])
+            time.sleep(3)
+            cl.direct_media_share(str(reel.pk), [int(target_user_id)])
+            sent_ids.add(str(reel.pk))
+            sent_today += 1
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pathavli! ({sent_today}/{daily_limit})")
+
+            gap = random.randint(1200, 3000)  # 20 te 50 min
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pudchi reel {gap//60} min nantar...")
+            time.sleep(gap)
+
+        except (LoginRequired, ChallengeRequired):
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Session expired in reel sender!")
+            time.sleep(300)
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Error: {e}")
+            time.sleep(600)
 
 def main():
     print(f"[{time.strftime('%H:%M:%S')}] Starting Instagram text bot for Anvi")

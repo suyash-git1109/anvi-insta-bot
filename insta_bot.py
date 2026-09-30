@@ -2,6 +2,7 @@ import os, time, random, base64, pickle, threading, imaplib, email, re
 from groq import Groq
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired, ChallengeRequired
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 GROQ_API_KEY       = os.environ.get("GROQ_API_KEY", "")
 IG_USERNAME        = os.environ.get("IG_USERNAME", "")
@@ -12,9 +13,29 @@ POLL_MIN           = int(os.environ.get("POLL_MIN_SECONDS", "300"))
 POLL_MAX           = int(os.environ.get("POLL_MAX_SECONDS", "420"))
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+PORT                = int(os.environ.get("PORT", "3000"))
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 conversation_history = []
+
+
+# ---- KEEP-ALIVE (Render Web Service ला port ऐकणारा सर्व्हर हवा असतो) ----
+class Ping(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"bot alive")
+
+    def log_message(self, *a):
+        pass
+
+
+def start_keepalive():
+    threading.Thread(
+        target=lambda: HTTPServer(("0.0.0.0", PORT), Ping).serve_forever(),
+        daemon=True,
+    ).start()
+
 
 def gmail_otp_handler(username, choice):
     print(f"[{time.strftime('%H:%M:%S')}] Instagram OTP maagat ahe! Gmail check kartoy...")
@@ -53,6 +74,7 @@ def gmail_otp_handler(username, choice):
         print(f"[{time.strftime('%H:%M:%S')}] Gmail error: {e}")
     return ""
 
+
 def get_ai_reply(user_message):
     system_prompt = f"""Tu Anvi aahes - {TARGET_USERNAME} chi Instagram var khup close girlfriend.
 Tu always Roman Marathi madhe bold. Devanagari nakos, pure English nakos.
@@ -70,6 +92,7 @@ Tu natural, warm, loving ani playful aahes. Short messages (1-2 sentences). Emoj
     reply = response.choices[0].message.content.strip()
     conversation_history.append({"role": "assistant", "content": reply})
     return reply
+
 
 def login_instagram():
     cl = Client()
@@ -94,6 +117,7 @@ def login_instagram():
         print(f"[{time.strftime('%H:%M:%S')}] Login FAILED: {e}")
         raise
 
+
 def send_reply(cl, thread_id, text):
     try:
         cl.direct_send(text, thread_ids=[thread_id])
@@ -102,6 +126,7 @@ def send_reply(cl, thread_id, text):
         raise
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Send error: {e}")
+
 
 def reel_sender(cl, target_user_id):
     sent_today = []
@@ -160,7 +185,9 @@ def reel_sender(cl, target_user_id):
             print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathavlya! Kal parat!")
             time.sleep(3600)
 
+
 def main():
+    start_keepalive()
     print(f"[{time.strftime('%H:%M:%S')}] Starting Instagram bot for Anvi")
     cl = login_instagram()
 
@@ -231,6 +258,7 @@ def main():
                 consecutive_errors = 0
             else:
                 time.sleep(30)
+
 
 if __name__ == "__main__":
     main()

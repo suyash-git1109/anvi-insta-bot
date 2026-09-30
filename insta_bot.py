@@ -1,79 +1,24 @@
-import os, time, random, base64, pickle, threading, imaplib, email, re
+import os
+import time
+import random
+import base64
+import pickle
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from groq import Groq
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired, ChallengeRequired
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
-GROQ_API_KEY       = os.environ.get("GROQ_API_KEY", "")
-IG_USERNAME        = os.environ.get("IG_USERNAME", "")
-IG_PASSWORD        = os.environ.get("IG_PASSWORD", "")
-IG_SESSION_B64     = os.environ.get("IG_SESSION_B64", "")
-TARGET_USERNAME    = os.environ.get("TARGET_USERNAME", "")
-POLL_MIN           = int(os.environ.get("POLL_MIN_SECONDS", "300"))
-POLL_MAX           = int(os.environ.get("POLL_MAX_SECONDS", "420"))
-GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
-PORT                = int(os.environ.get("PORT", "3000"))
+GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
+IG_USERNAME     = os.environ.get("IG_USERNAME", "")
+IG_PASSWORD     = os.environ.get("IG_PASSWORD", "")
+IG_SESSION_B64  = os.environ.get("IG_SESSION_B64", "")
+TARGET_USERNAME = os.environ.get("TARGET_USERNAME", "")
+POLL_MIN        = int(os.environ.get("POLL_MIN_SECONDS", "300"))
+POLL_MAX        = int(os.environ.get("POLL_MAX_SECONDS", "420"))
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 conversation_history = []
-
-
-# ---- KEEP-ALIVE (Render Web Service ला port ऐकणारा सर्व्हर हवा असतो) ----
-class Ping(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"bot alive")
-
-    def log_message(self, *a):
-        pass
-
-
-def start_keepalive():
-    threading.Thread(
-        target=lambda: HTTPServer(("0.0.0.0", PORT), Ping).serve_forever(),
-        daemon=True,
-    ).start()
-
-
-def gmail_otp_handler(username, choice):
-    print(f"[{time.strftime('%H:%M:%S')}] Instagram OTP maagat ahe! Gmail check kartoy...")
-    time.sleep(20)
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        mail.select("inbox")
-        for attempt in range(6):
-            _, messages = mail.search(None, 'FROM "security@mail.instagram.com"')
-            if not messages[0]:
-                _, messages = mail.search(None, 'FROM "instagram.com"')
-            if messages[0]:
-                latest = messages[0].split()[-1]
-                _, msg_data = mail.fetch(latest, "(RFC822)")
-                raw_email = msg_data[0][1]
-                msg = email.message_from_bytes(raw_email)
-                body = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain":
-                            body = part.get_payload(decode=True).decode()
-                            break
-                else:
-                    body = msg.get_payload(decode=True).decode()
-                otp_match = re.search(r'\b(\d{6})\b', body)
-                if otp_match:
-                    otp = otp_match.group(1)
-                    print(f"[{time.strftime('%H:%M:%S')}] OTP milala: {otp}")
-                    mail.logout()
-                    return otp
-            print(f"[{time.strftime('%H:%M:%S')}] Attempt {attempt+1}: OTP abhi nahi, 15 sec wait...")
-            time.sleep(15)
-        mail.logout()
-    except Exception as e:
-        print(f"[{time.strftime('%H:%M:%S')}] Gmail error: {e}")
-    return ""
-
 
 def get_ai_reply(user_message):
     system_prompt = f"""Tu Anvi aahes - {TARGET_USERNAME} chi Instagram var khup close girlfriend.
@@ -84,7 +29,7 @@ Tu natural, warm, loving ani playful aahes. Short messages (1-2 sentences). Emoj
     if len(conversation_history) > 20:
         conversation_history.pop(0)
     response = groq_client.chat.completions.create(
-        model="llama3-8b-8192",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "system", "content": system_prompt}] + conversation_history,
         max_tokens=150,
         temperature=0.85
@@ -93,12 +38,9 @@ Tu natural, warm, loving ani playful aahes. Short messages (1-2 sentences). Emoj
     conversation_history.append({"role": "assistant", "content": reply})
     return reply
 
-
 def login_instagram():
     cl = Client()
     cl.delay_range = [2, 5]
-    cl.challenge_code_handler = gmail_otp_handler
-
     if IG_SESSION_B64:
         try:
             session_bytes = base64.b64decode(IG_SESSION_B64)
@@ -111,12 +53,11 @@ def login_instagram():
             print(f"[{time.strftime('%H:%M:%S')}] Session invalid: {e}. Fresh login...")
     try:
         cl.login(IG_USERNAME, IG_PASSWORD)
-        print(f"[{time.strftime('%H:%M:%S')}] Logged in successfully!")
+        print(f"[{time.strftime('%H:%M:%S')}] Logged in with password!")
         return cl
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Login FAILED: {e}")
         raise
-
 
 def send_reply(cl, thread_id, text):
     try:
@@ -127,68 +68,93 @@ def send_reply(cl, thread_id, text):
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Send error: {e}")
 
-
 def reel_sender(cl, target_user_id):
-    sent_today = []
-    max_reels_per_day = random.randint(5, 20)
-    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathvnar!")
+    MESSAGES = [
+        "he bagh na, aapan donghe ase ch aahot 😂❤️",
+        "re babu hi reel pahun mala tujhi aathvan aali 🥺",
+        "tu ani mi, exactly asech bhandto 😭😂",
+        "hya couple sarkhi aapli jodi aahe na? 🥰",
+        "he pahilas ka? mi tujhyavar ragavle tar asach hoil 😤😂",
+        "aww kiti god aahe he, mala pan asach pahije 🥹❤️",
+        "tu mala kadhi asa surprise dilas ka? 😏",
+        "ha mulga tujhya sarkha vedha aahe 😂😂",
+        "hi mulgi mazya sarkhi nautanki aahe ka? 🙈",
+        "he bagh ani mala sang, tu asa karshil ka? 😌",
+        "me tula miss kartey, he bagh ani hass 🫶",
+        "asach ek date pahije mala tujhyasobat 🥺❤️",
+        "tu itka romantic kadhi honar re? 😜",
+        "hya reel madhe tuch disla mala 😂😍",
+    ]
+    HASHTAGS = ["couplegoals", "coupleslove", "cutecouple", "relationshipgoals", "marathicouple"]
+
+    sent_ids = set()
+    current_day = time.strftime("%Y-%m-%d")
+    sent_today = 0
+    daily_limit = random.randint(5, 20)
+    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {daily_limit} reels pathvnar!")
 
     while True:
-        now = time.localtime()
-        hour = now.tm_hour
-        if hour == 0:
-            sent_today = []
-            max_reels_per_day = random.randint(5, 20)
-            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Navin din! Aaj {max_reels_per_day} reels!")
+        try:
+            today = time.strftime("%Y-%m-%d")
+            if today != current_day:
+                current_day = today
+                sent_today = 0
+                daily_limit = random.randint(5, 20)
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Navin din! Aaj {daily_limit} reels pathvnar!")
 
-        if len(sent_today) < max_reels_per_day:
-            try:
-                medias = cl.user_feed(cl.user_id, amount=50)
-                reels = [m for m in medias if m.media_type == 2 and m.product_type == "clips"]
-                if reels:
-                    reel = random.choice(reels)
-                    if reel.pk not in sent_today:
-                        messages = [
-                            "haha he bagh 😂😂",
-                            "re tu bagh ekda 🥺❤️",
-                            "hya sarkha ahe apan 😍",
-                            "lol yacha mala hasaycha hota 😂",
-                            "ekdum mi sarakha ahe na? 🥹",
-                            "aww he bagh re 🫶",
-                            "hahaha too much 😂💀",
-                            "re mi tujhyasathi pathavli 🥰",
-                            "he bagh kiti cute ahe 🥰",
-                            "hya sarkha tu aahes exactly 😂❤️",
-                            "babu he bagh 😭🔥",
-                            "lol me hasate hasate padle 😂",
-                        ]
-                        msg = random.choice(messages)
-                        send_reply(cl, target_user_id, msg)
-                        time.sleep(3)
-                        cl.direct_send_media(reel.pk, thread_ids=[target_user_id])
-                        sent_today.append(reel.pk)
-                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] ({len(sent_today)}/{max_reels_per_day})")
-                        gap = random.randint(900, 2700)
-                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pudchi reel {gap//60} min nantar...")
-                        time.sleep(gap)
-                    else:
-                        time.sleep(300)
-                else:
-                    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reels sapadlya nahi.")
-                    time.sleep(1800)
-            except (LoginRequired, ChallengeRequired):
-                time.sleep(60)
-            except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] Reel error: {e}")
-                time.sleep(600)
-        else:
-            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathavlya! Kal parat!")
-            time.sleep(3600)
+            if sent_today >= daily_limit:
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj che {daily_limit} reels zale, kal parat!")
+                time.sleep(1800)
+                continue
 
+            tag = random.choice(HASHTAGS)
+            medias = cl.hashtag_medias_top(tag, amount=30)
+            reels = [m for m in medias
+                     if m.media_type == 2 and m.product_type == "clips"
+                     and str(m.pk) not in sent_ids]
+
+            if not reels:
+                print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reels sapadlya nahit, 30 min nantar try...")
+                time.sleep(1800)
+                continue
+
+            reel = random.choice(reels)
+            cl.direct_send(random.choice(MESSAGES), user_ids=[int(target_user_id)])
+            time.sleep(3)
+            cl.direct_media_share(str(reel.pk), [int(target_user_id)])
+            sent_ids.add(str(reel.pk))
+            sent_today += 1
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pathavli! ({sent_today}/{daily_limit})")
+
+            gap = random.randint(1200, 3000)  # 20 te 50 min
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pudchi reel {gap//60} min nantar...")
+            time.sleep(gap)
+
+        except (LoginRequired, ChallengeRequired):
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Session expired in reel sender!")
+            time.sleep(300)
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Error: {e}")
+            time.sleep(600)
+
+class Ping(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Anvi bot is running")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
+def start_web_server():
+    port = int(os.environ.get("PORT", "10000"))
+    HTTPServer(("0.0.0.0", port), Ping).serve_forever()
 
 def main():
-    start_keepalive()
-    print(f"[{time.strftime('%H:%M:%S')}] Starting Instagram bot for Anvi")
+    threading.Thread(target=start_web_server, daemon=True).start()
+    print(f"[{time.strftime('%H:%M:%S')}] Starting Instagram text bot for Anvi")
     cl = login_instagram()
 
     try:
@@ -258,7 +224,6 @@ def main():
                 consecutive_errors = 0
             else:
                 time.sleep(30)
-
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,7 @@
-import os, time, random, base64, pickle, threading, imaplib, email
+import os, time, random, base64, pickle, threading, imaplib, email, re
 from groq import Groq
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired, ChallengeRequired
-import re
 
 GROQ_API_KEY       = os.environ.get("GROQ_API_KEY", "")
 IG_USERNAME        = os.environ.get("IG_USERNAME", "")
@@ -17,51 +16,42 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
 conversation_history = []
 
-def get_otp_from_gmail():
-    """Instagram OTP Gmail madhun automatic read karo"""
+def gmail_otp_handler(username, choice):
+    print(f"[{time.strftime('%H:%M:%S')}] Instagram OTP maagat ahe! Gmail check kartoy...")
+    time.sleep(20)
     try:
-        print(f"[{time.strftime('%H:%M:%S')}] Gmail madhun OTP search kartoy...")
-        time.sleep(15)  # Email yenyasathi wait
-
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         mail.select("inbox")
-
-        # Last 2 minutatla Instagram email shodh
-        _, messages = mail.search(None, 'FROM "security@mail.instagram.com" UNSEEN')
-        
-        if not messages[0]:
-            _, messages = mail.search(None, 'FROM "instagram.com"')
-
-        if messages[0]:
-            latest = messages[0].split()[-1]
-            _, msg_data = mail.fetch(latest, "(RFC822)")
-            raw_email = msg_data[0][1]
-            msg = email.message_from_bytes(raw_email)
-            
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        body = part.get_payload(decode=True).decode()
-                        break
-            else:
-                body = msg.get_payload(decode=True).decode()
-
-            # 6-digit OTP shodh
-            otp_match = re.search(r'\b(\d{6})\b', body)
-            if otp_match:
-                otp = otp_match.group(1)
-                print(f"[{time.strftime('%H:%M:%S')}] OTP milala: {otp}")
-                mail.logout()
-                return otp
-
+        for attempt in range(6):
+            _, messages = mail.search(None, 'FROM "security@mail.instagram.com"')
+            if not messages[0]:
+                _, messages = mail.search(None, 'FROM "instagram.com"')
+            if messages[0]:
+                latest = messages[0].split()[-1]
+                _, msg_data = mail.fetch(latest, "(RFC822)")
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/plain":
+                            body = part.get_payload(decode=True).decode()
+                            break
+                else:
+                    body = msg.get_payload(decode=True).decode()
+                otp_match = re.search(r'\b(\d{6})\b', body)
+                if otp_match:
+                    otp = otp_match.group(1)
+                    print(f"[{time.strftime('%H:%M:%S')}] OTP milala: {otp}")
+                    mail.logout()
+                    return otp
+            print(f"[{time.strftime('%H:%M:%S')}] Attempt {attempt+1}: OTP abhi nahi, 15 sec wait...")
+            time.sleep(15)
         mail.logout()
-        print(f"[{time.strftime('%H:%M:%S')}] OTP sapadla nahi!")
-        return None
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Gmail error: {e}")
-        return None
+    return ""
 
 def get_ai_reply(user_message):
     system_prompt = f"""Tu Anvi aahes - {TARGET_USERNAME} chi Instagram var khup close girlfriend.
@@ -84,6 +74,8 @@ Tu natural, warm, loving ani playful aahes. Short messages (1-2 sentences). Emoj
 def login_instagram():
     cl = Client()
     cl.delay_range = [2, 5]
+    cl.challenge_code_handler = gmail_otp_handler
+
     if IG_SESSION_B64:
         try:
             session_bytes = base64.b64decode(IG_SESSION_B64)
@@ -92,35 +84,12 @@ def login_instagram():
             cl.login(IG_USERNAME, IG_PASSWORD)
             print(f"[{time.strftime('%H:%M:%S')}] Session restored!")
             return cl
-        except ChallengeRequired:
-            print(f"[{time.strftime('%H:%M:%S')}] Challenge required during session restore!")
-            otp = get_otp_from_gmail()
-            if otp:
-                cl.challenge_resolve(cl.last_challenge)
-                cl.challenge_send_code(1)
-                cl.challenge_resolve(cl.last_challenge, otp)
-                print(f"[{time.strftime('%H:%M:%S')}] Challenge solved!")
-                return cl
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] Session invalid: {e}. Fresh login...")
     try:
         cl.login(IG_USERNAME, IG_PASSWORD)
-        print(f"[{time.strftime('%H:%M:%S')}] Logged in with password!")
+        print(f"[{time.strftime('%H:%M:%S')}] Logged in successfully!")
         return cl
-    except ChallengeRequired:
-        print(f"[{time.strftime('%H:%M:%S')}] Challenge on fresh login! Getting OTP...")
-        otp = get_otp_from_gmail()
-        if otp:
-            try:
-                cl.challenge_resolve(cl.last_challenge)
-                cl.challenge_send_code(1)
-                time.sleep(5)
-                cl.challenge_resolve(cl.last_challenge, otp)
-                print(f"[{time.strftime('%H:%M:%S')}] Challenge solved! Logged in!")
-                return cl
-            except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] Challenge solve failed: {e}")
-                raise
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Login FAILED: {e}")
         raise
@@ -175,10 +144,12 @@ def reel_sender(cl, target_user_id):
                         sent_today.append(reel.pk)
                         print(f"[{time.strftime('%H:%M:%S')}] [REEL] ({len(sent_today)}/{max_reels_per_day})")
                         gap = random.randint(900, 2700)
+                        print(f"[{time.strftime('%H:%M:%S')}] [REEL] Pudchi reel {gap//60} min nantar...")
                         time.sleep(gap)
                     else:
                         time.sleep(300)
                 else:
+                    print(f"[{time.strftime('%H:%M:%S')}] [REEL] Reels sapadlya nahi.")
                     time.sleep(1800)
             except (LoginRequired, ChallengeRequired):
                 time.sleep(60)
@@ -186,6 +157,7 @@ def reel_sender(cl, target_user_id):
                 print(f"[{time.strftime('%H:%M:%S')}] Reel error: {e}")
                 time.sleep(600)
         else:
+            print(f"[{time.strftime('%H:%M:%S')}] [REEL] Aaj {max_reels_per_day} reels pathavlya! Kal parat!")
             time.sleep(3600)
 
 def main():
